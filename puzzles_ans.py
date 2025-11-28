@@ -707,11 +707,12 @@ def conv2d_kernel(
         for l in tl.range(0, W):
             off_j_oj = j + off_h[None, :, None]
             off_l_ol = l + off_w[None, None, :]
-            off_x = off_i * H * W + off_j_oj * W + off_l_ol
+            off_x = off_i[:, None, None] * H * W + off_j_oj * W + off_l_ol
             mask_x = (off_j_oj < H) & (off_l_ol < W)
             x = tl.load(x_ptr + off_x, mask=mask_x)
-
-            z = tl.sum(x * k[None, :])
+            # [B0, KH, KW]
+            z = x * k[None, :]
+            z = tl.sum(tl.sum(z, 2), 1)
             off_z = off_i * H * W + j * W + l
             tl.store(z_ptr + off_z, z)
 
@@ -1057,7 +1058,7 @@ def run_puzzles(args, puzzles: List[int]):
         ok = test(
             conv2d_kernel,
             conv2d_spec,
-            B={"B0": 1},
+            B={"B0": 2},
             nelem={"N0": 4, "H": 8, "W": 8, "KH": 4, "KW": 4},
             print_log=print_log,
             device=device,
