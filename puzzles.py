@@ -337,10 +337,8 @@ is of shape `N1` by `N0`
 def mul_relu_block_back_spec(
     x: Float32[90, 100], y: Float32[90,], dz: Float32[90, 100]
 ) -> Float32[90, 100]:
-    x = x.clone()
-    y = y.clone()
-    x = x.requires_grad_(True)
-    y = y.requires_grad_(True)
+    x = x.clone().detach().requires_grad_(True)
+    y = y.clone().detach().requires_grad_(True)
     z = torch.relu(x * y[:, None])
     z.backward(dz)
     dx = x.grad
