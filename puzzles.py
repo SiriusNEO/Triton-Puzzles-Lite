@@ -409,6 +409,35 @@ def mul_relu_block_kernel(
 ):
     block_id_x = tl.program_id(0)
     block_id_y = tl.program_id(1)
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(block_id_x * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    y_block_ptr = tl.make_block_ptr(
+        base=y_ptr,
+        shape=(N1,),
+        strides=(1,),
+        offsets=(block_id_y * B1,),
+        block_shape=(B1,),
+        order=(0,)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N1, N0),
+        strides=(N0, 1),
+        offsets=(block_id_y * B1, block_id_x * B0),
+        block_shape=(B1, B0),
+        order=(0, 1)
+    )
+    x = tl.load(x_block_ptr,boundary_check=(0,),padding_option='zero')
+    y = tl.load(y_block_ptr,boundary_check=(0,),padding_option='zero')
+    z = x[None, :] * y[:, None]
+    z = tl.maximum(0,z)
+    tl.store(z_block_ptr, z, boundary_check=(0,1))
     # Finish me!
     return
 
