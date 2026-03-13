@@ -476,6 +476,49 @@ def mul_relu_block_back_kernel(
 ):
     block_id_i = tl.program_id(0)
     block_id_j = tl.program_id(1)
+    #x:[N1,N0]
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N1, N0),
+        strides=(N0, 1),
+        offsets=(block_id_j * B1, block_id_i * B0),
+        block_shape=(B1, B0),
+        order=(1, 0),
+    )
+    #y:[N1]
+    y_block_ptr = tl.make_block_ptr(
+        base=y_ptr,
+        shape=(N1,),
+        strides=(1,),
+        offsets=(block_id_j * B1,),
+        block_shape=(B1,),
+        order=(0,),
+    )
+    #dz:[N1,N0]
+    dz_block_ptr = tl.make_block_ptr(
+        base=dz_ptr,
+        shape=(N1, N0),
+        strides=(N0,1),
+        offsets=(block_id_j * B1, block_id_i * B0),
+        block_shape=(B1, B0),
+        order=(1, 0),
+    )
+    #dx:[N1,N0]
+    dx_block_ptr = tl.make_block_ptr(
+        base=dx_ptr,
+        shape=(N1, N0),
+        strides=(N0, 1),
+        offsets=(block_id_j * B1, block_id_i * B0),
+        block_shape=(B1, B0),
+        order=(1, 0),
+    )
+    x = tl.load(x_block_ptr,boundary_check=(0, 1),padding_option='zero')
+    y = tl.load(y_block_ptr,boundary_check=(0,),padding_option='zero')
+
+    dz = tl.load(dz_block_ptr,boundary_check=(0, 1),padding_option='zero')
+    dx = tl.where(x * y[:, None] > 0, y[:, None] * dz, 0)
+
+    tl.store(dx_block_ptr, dx,boundary_check=(0,1))
     # Finish me!
     return
 
@@ -502,6 +545,29 @@ def sum_spec(x: Float32[4, 200]) -> Float32[4,]:
 @triton.jit
 def sum_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
     # Finish me!
+    tile_id = tl.program_id(0)
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0, T),
+        strides=(T, 1),
+        offsets=(tile_id * B0, 0),
+        block_shape=(B0, B1),
+        order=(1, 0)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(tile_id * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    z = tl.zeros((B0,), dtype=tl.float32)
+    for i in range(0, T, B1):
+        x = tl.load(x_block_ptr, boundary_check=(0, 1), padding_option='zero')
+        z += tl.sum(x,1)
+        x_block_ptr = tl.advance(x_block_ptr,(0,B1))
+    tl.store(z_block_ptr, z, boundary_check=(0,))
     return
 
 
@@ -538,22 +604,102 @@ def softmax_spec(x: Float32[4, 200]) -> Float32[4, 200]:
 
 
 @triton.jit
-def softmax_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
+def softmax_kernel_brute_force(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
     """2 loops ver."""
     block_id_i = tl.program_id(0)
     log2_e = 1.44269504
+
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0, T),
+        strides=(T, 1),
+        offsets=(block_id_i * B0, 0),
+        block_shape=(B0, B1),
+        order=(1, 0)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N0, T),
+        strides=(T, 1),
+        offsets=(block_id_i * B0, 0),
+        block_shape=(B0, B1),
+        order=(1, 0)
+    )
+    z = tl.zeros((B0, B1), dtype=tl.float32)
+    x_max = tl.full((B0,), float("-inf"), dtype=tl.float32)
+    x_block_ptr1 = x_block_ptr
+    for i in range(0,T,B1):
+        x = tl.load(x_block_ptr1, boundary_check=(0, 1), padding_option='zero')
+        x_max = tl.maximum(x_max, tl.max(x,1))
+        x_block_ptr1 = tl.advance(x_block_ptr1,(0,B1))
+    sum = tl.zeros((B0,), dtype=tl.float32)
+    x_block_ptr1 = x_block_ptr
+    for i in range(0,T,B1):
+        x = tl.load(x_block_ptr1, boundary_check=(0, 1), padding_option='zero')
+        x = x - x_max[:, None]
+        x_exp = tl.exp2(log2_e * x)
+        sum += tl.sum(x_exp,1)
+        x_block_ptr1 = tl.advance(x_block_ptr1,(0,B1))
+    for i in range(0,T,B1):
+        x = tl.load(x_block_ptr, boundary_check=(0, 1), padding_option='zero')
+        x = x - x_max[:, None]
+        x_exp = tl.exp2(log2_e * x)
+        z = x_exp / sum[:, None]
+        tl.store(z_block_ptr, z, boundary_check=(0, 1))
+        x_block_ptr = tl.advance(x_block_ptr,(0,B1))
+        z_block_ptr = tl.advance(z_block_ptr,(0,B1))
+
     # Finish me!
     return
 
 
 @triton.jit
-def softmax_kernel_brute_force(
+def softmax_kernel(
     x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr
 ):
     """3 loops ver."""
     block_id_i = tl.program_id(0)
     log2_e = 1.44269504
-    # Finish me!
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0, T),
+        strides=(T, 1),
+        offsets=(block_id_i * B0, 0),
+        block_shape=(B0, B1),
+        order=(1, 0)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N0, T),
+        strides=(T, 1),
+        offsets=(block_id_i * B0, 0),
+        block_shape=(B0, B1),
+        order=(1, 0)
+    )
+    z = tl.zeros((B0, B1), dtype=tl.float32)
+    x_max = tl.full((B0,), float("-inf"), dtype=tl.float32)
+    sum = tl.zeros((B0,), dtype=tl.float32)
+    x_block_ptr1 = x_block_ptr
+    for i in range(0,T,B1):
+        x = tl.load(x_block_ptr1, boundary_check=(0, 1), padding_option='zero')
+        new_x_max = tl.maximum(x_max, tl.max(x,1))
+        if i == 0:
+            x_max = new_x_max
+            sum = tl.sum(tl.exp2(log2_e * (x - x_max[:, None])),1)
+        else:
+            scale = tl.exp2(log2_e * (x_max - new_x_max))
+            sum = sum * scale + tl.sum(tl.exp2(log2_e * (x - new_x_max[:, None])),1)
+            x_max = new_x_max
+        x_block_ptr1 = tl.advance(x_block_ptr1,(0,B1))
+    for i in range(0,T,B1):
+        x = tl.load(x_block_ptr, boundary_check=(0, 1), padding_option='zero')
+        x = x - x_max[:, None]
+        x_exp = tl.exp2(log2_e * x)
+        z = x_exp / sum[:, None]
+        tl.store(z_block_ptr, z, boundary_check=(0, 1))
+        x_block_ptr = tl.advance(x_block_ptr,(0,B1))
+        z_block_ptr = tl.advance(z_block_ptr,(0,B1))
+        # Finish me!
     return
 
 
@@ -591,6 +737,63 @@ def flashatt_kernel(
     block_id_i = tl.program_id(0)
     log2_e = 1.44269504
     myexp = lambda x: tl.exp2(log2_e * x)
+    q_block_ptr = tl.make_block_ptr(
+        base=q_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(block_id_i * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    k_block_ptr = tl.make_block_ptr(
+        base=k_ptr,
+        shape=(T,),
+        strides=(1,),
+        offsets=(0,),
+        block_shape=(B1,),
+        order=(0,)
+    )
+    v_block_ptr = tl.make_block_ptr(
+        base=v_ptr,
+        shape=(T,),
+        strides=(1,),
+        offsets=(0,),
+        block_shape=(B1,),
+        order=(0,)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(block_id_i * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+
+    qk_max = tl.full((B0,), float("-inf"), dtype=tl.float32)
+    qk_sum = tl.zeros((B0,), dtype=tl.float32)
+    o = tl.zeros((B0,), dtype=tl.float32)
+    for i in range(0, T, B1):
+        q = tl.load(q_block_ptr, boundary_check=(0,), padding_option='zero')
+        k = tl.load(k_block_ptr, boundary_check=(0,), padding_option='zero')
+        v = tl.load(v_block_ptr, boundary_check=(0,), padding_option='zero')
+        qk = q[:, None] * k[None, :]
+        new_qk_max = tl.maximum(qk_max,tl.max(qk, 1))
+        if i == 0:
+            qk_max = new_qk_max
+            qk_exp = myexp(qk - qk_max[:,None])
+            qk_sum = tl.sum(qk_exp, 1)
+            o = tl.sum(qk_exp * v[None, :] / qk_sum[:,None], 1)
+        else:
+            qk_exp = myexp(qk - new_qk_max[:,None])
+            scale = myexp(qk_max - new_qk_max)
+            scale1 = scale * qk_sum
+            qk_sum = qk_sum * scale + tl.sum(qk_exp, 1)
+            o = o * scale1 / qk_sum + tl.sum(qk_exp * v[None, :] / qk_sum[:,None], 1)
+            qk_max = new_qk_max
+        k_block_ptr = tl.advance(k_block_ptr,(B1,))
+        v_block_ptr = tl.advance(v_block_ptr,(B1,))
+    tl.store(z_block_ptr, o, boundary_check=(0,))
     # Finish me!
     return
 
