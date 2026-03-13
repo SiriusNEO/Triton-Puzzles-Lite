@@ -212,9 +212,26 @@ def add_spec(x: Float32[32,]) -> Float32[32,]:
 
 @triton.jit
 def add_kernel(x_ptr, z_ptr, N0, B0: tl.constexpr):
-    # We name the offsets of the pointers as "off_"
-    off_x = tl.arange(0, B0)
-    x = tl.load(x_ptr + off_x)
+    row_tile_idx = tl.program_id(0)
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(row_tile_idx * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(row_tile_idx * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    x = tl.load(x_block_ptr,boundary_check=(0,),padding_option='zero')
+    z = x + 10.0
+    tl.store(z_block_ptr, z, boundary_check=(0,))
     # Finish me!
     return
 
