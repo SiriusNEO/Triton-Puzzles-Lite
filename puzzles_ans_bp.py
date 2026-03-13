@@ -212,9 +212,26 @@ def add_spec(x: Float32[32,]) -> Float32[32,]:
 
 @triton.jit
 def add_kernel(x_ptr, z_ptr, N0, B0: tl.constexpr):
-    # We name the offsets of the pointers as "off_"
-    off_x = tl.arange(0, B0)
-    x = tl.load(x_ptr + off_x)
+    row_tile_idx = tl.program_id(0)
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(row_tile_idx * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(row_tile_idx * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    x = tl.load(x_block_ptr,boundary_check=(0,),padding_option='zero')
+    z = x + 10.0
+    tl.store(z_block_ptr, z, boundary_check=(0,))
     # Finish me!
     return
 
@@ -237,6 +254,26 @@ def add2_spec(x: Float32[200,]) -> Float32[200,]:
 @triton.jit
 def add_mask2_kernel(x_ptr, z_ptr, N0, B0: tl.constexpr):
     # Finish me!
+    row_tile_idx = tl.program_id(0)
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(row_tile_idx * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(row_tile_idx * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    x = tl.load(x_block_ptr,boundary_check=(0,),padding_option='zero')
+    z = x + 10.0
+    tl.store(z_block_ptr, z, boundary_check=(0,))
     return
 
 
@@ -260,6 +297,36 @@ def add_vec_spec(x: Float32[32,], y: Float32[32,]) -> Float32[32, 32]:
 @triton.jit
 def add_vec_kernel(x_ptr, y_ptr, z_ptr, N0, N1, B0: tl.constexpr, B1: tl.constexpr):
     # Finish me!
+    row_tile_idx = tl.program_id(0)
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(row_tile_idx * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    y_block_ptr = tl.make_block_ptr(
+        base=y_ptr,
+        shape=(N1,),
+        strides=(1,),
+        offsets=(row_tile_idx * B1,),
+        block_shape=(B1,),
+        order=(0,)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N1, N0),
+        strides=(N0, 1),
+        offsets=(row_tile_idx * B1, row_tile_idx * B0),
+        block_shape=(B1, B0),
+        order=(0, 1)
+    )
+    x = tl.load(x_block_ptr,boundary_check=(0,),padding_option='zero')
+    y = tl.load(y_block_ptr,boundary_check=(0,),padding_option='zero')
+    z = x[None, :] + y[:, None]
+    tl.store(z_block_ptr, z, boundary_check=(0,))
+
     return
 
 
@@ -284,8 +351,37 @@ def add_vec_block_spec(x: Float32[100,], y: Float32[90,]) -> Float32[90, 100]:
 def add_vec_block_kernel(
     x_ptr, y_ptr, z_ptr, N0, N1, B0: tl.constexpr, B1: tl.constexpr
 ):
-    block_id_x = tl.program_id(0)
-    block_id_y = tl.program_id(1)
+    x_tile_idx = tl.program_id(0)
+    y_tile_idx = tl.program_id(1)
+
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(x_tile_idx * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    y_block_ptr = tl.make_block_ptr(
+        base=y_ptr,
+        shape=(N1,),
+        strides=(1,),
+        offsets=(y_tile_idx * B1,),
+        block_shape=(B1,),
+        order=(0,)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N1, N0),
+        strides=(N0, 1),
+        offsets=(y_tile_idx * B1, x_tile_idx * B0),
+        block_shape=(B1, B0),
+        order=(0, 1)
+    )
+    x = tl.load(x_block_ptr,boundary_check=(0,),padding_option='zero')
+    y = tl.load(y_block_ptr,boundary_check=(0,),padding_option='zero')
+    z = x[None, :] + y[:, None]
+    tl.store(z_block_ptr, z, boundary_check=(0,1))
     # Finish me!
     return
 
@@ -313,6 +409,35 @@ def mul_relu_block_kernel(
 ):
     block_id_x = tl.program_id(0)
     block_id_y = tl.program_id(1)
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0,),
+        strides=(1,),
+        offsets=(block_id_x * B0,),
+        block_shape=(B0,),
+        order=(0,)
+    )
+    y_block_ptr = tl.make_block_ptr(
+        base=y_ptr,
+        shape=(N1,),
+        strides=(1,),
+        offsets=(block_id_y * B1,),
+        block_shape=(B1,),
+        order=(0,)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N1, N0),
+        strides=(N0, 1),
+        offsets=(block_id_y * B1, block_id_x * B0),
+        block_shape=(B1, B0),
+        order=(0, 1)
+    )
+    x = tl.load(x_block_ptr,boundary_check=(0,),padding_option='zero')
+    y = tl.load(y_block_ptr,boundary_check=(0,),padding_option='zero')
+    z = x[None, :] * y[:, None]
+    z = tl.maximum(0,z)
+    tl.store(z_block_ptr, z, boundary_check=(0,1))
     # Finish me!
     return
 
