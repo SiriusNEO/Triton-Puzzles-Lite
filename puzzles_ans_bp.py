@@ -1060,10 +1060,10 @@ def quant_dot_kernel(
         scale_fp32 = tl.load(scale_block_ptr, boundary_check=(0,1), padding_option='zero')#[B0,GROUP]
         
         offset_int32 = extract(tl.load(offset_block_ptr, boundary_check=(0,1), padding_option='zero'))#[B0, GROUP // FPINT, FPINT]
-        offset_int32 = offset_int32.view(B0, GROUP)#[B0, GROUP]
+        offset_int32 = offset_int32.reshape(B0, GROUP)#[B0, GROUP]
         
         weight_int32 = extract(tl.load(weight_block_ptr, boundary_check=(0,1), padding_option='zero'))#[B0, B_MID // FPINT, FPINT]
-        weight_int32 = weight_int32.view(B0, B_MID)#[B0, B_MID]
+        weight_int32 = weight_int32.reshape(B0, B_MID)#[B0, B_MID]
         weight_int32 = weight_int32.reshape(B0,GROUP,B_MID // GROUP)#[B0, GROUP, B_MID // GROUP]
 
         activation_fp32 = tl.load(activation_block_ptr, boundary_check=(0,1), padding_option='zero')
