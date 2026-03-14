@@ -827,7 +827,45 @@ def conv2d_kernel(
     x_ptr, k_ptr, z_ptr, N0, H, W, KH: tl.constexpr, KW: tl.constexpr, B0: tl.constexpr
 ):
     block_id_i = tl.program_id(0)
-    # Finish me!
+    k_block_ptr = tl.make_block_ptr(
+        base=k_ptr,
+        shape=(KH, KW),
+        strides=(KW, 1),
+        offsets=(0, 0),
+        block_shape=(KH, KW),
+        order=(1, 0),
+    )
+    k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
+
+    x_row_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N0, H, W),
+        strides=(H * W, W, 1),
+        offsets=(block_id_i * B0, 0, 0),
+        block_shape=(B0, KH, KW),
+        order=(2, 1, 0),
+    )
+    z_row_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N0, H, W),
+        strides=(H * W, W, 1),
+        offsets=(block_id_i * B0, 0, 0),
+        block_shape=(B0, 1, 1),
+        order=(2, 1, 0),
+    )
+
+    for _ in range(H):
+        x_block_ptr = x_row_block_ptr
+        z_block_ptr = z_row_block_ptr
+        for _ in range(W):
+            x = tl.load(x_block_ptr, boundary_check=(0, 1, 2), padding_option="zero")
+            z = (x * k[None, :, :]).sum(1).sum(1)
+            tl.store(z_block_ptr, z[:, None, None], boundary_check=(0, 1, 2))
+            x_block_ptr = tl.advance(x_block_ptr, (0, 0, 1))
+            z_block_ptr = tl.advance(z_block_ptr, (0, 0, 1))
+        x_row_block_ptr = tl.advance(x_row_block_ptr, (0, 1, 0))
+        z_row_block_ptr = tl.advance(z_row_block_ptr, (0, 1, 0))
+
     return
 
 
@@ -874,6 +912,38 @@ def dot_kernel(
     block_id_k = tl.program_id(1)
     block_id_i = tl.program_id(2)
     # Finish me!
+    x_block_ptr = tl.make_block_ptr(
+        base=x_ptr,
+        shape=(N2,N0,MID),
+        strides=(N0 * MID,MID,1),
+        offsets=(block_id_i * B2, block_id_j * B0, 0),
+        block_shape=(B2, B0, B_MID),
+        order=(0, 1, 2),
+    )
+    y_block_ptr = tl.make_block_ptr(
+        base=y_ptr,
+        shape=(N2,MID,N1),
+        strides=(MID * N1,N1,1),
+        offsets=(block_id_i * B2, 0, block_id_k * B1),
+        block_shape=(B2, B_MID, B1),
+        order=(0, 1, 2),
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base=z_ptr,
+        shape=(N2,N0,N1),
+        strides=(N0 * N1,N1,1),
+        offsets=(block_id_i * B2, block_id_j * B0, block_id_k * B1),
+        block_shape=(B2, B0, B1),
+        order=(0, 1, 2),
+    )
+    z = tl.zeros((B2, B0, B1), dtype=tl.float32)
+    for i in range(0, MID, B_MID):
+        x = tl.load(x_block_ptr, boundary_check=(0,1,2),padding_option='zero')
+        y = tl.load(y_block_ptr, boundary_check=(0,1,2),padding_option='zero')
+        z += tl.dot(x,y)
+        x_block_ptr = tl.advance(x_block_ptr,(0,0,B_MID))
+        y_block_ptr = tl.advance(y_block_ptr,(0,B_MID,0))
+    tl.store(z_block_ptr, z, boundary_check=(0,1,2))
     return
 
 
@@ -939,6 +1009,75 @@ def quant_dot_kernel(
 ):
     block_id_j = tl.program_id(0)
     block_id_k = tl.program_id(1)
+
+    def extract(x):
+        over = tl.arange(0,8) * 4
+        mask = 2**4 - 1
+        return (x[:,:, None] >> over) & mask
+
+    activation_block_ptr = tl.make_block_ptr(
+        base = activation_ptr,
+        shape = (MID,N1),
+        strides = (N1,1),
+        offsets = (0, block_id_k * B1),
+        block_shape = (B_MID, B1),
+        order = (0,1)
+    )
+    weight_block_ptr = tl.make_block_ptr(
+        base = weight_ptr,
+        shape = (N0,MID // FPINT),
+        strides = (MID // FPINT,1),
+        offsets = (block_id_j * B0, 0),
+        block_shape = (B0, B_MID // FPINT),
+        order = (1,0)
+    )
+    scale_block_ptr = tl.make_block_ptr(
+        base = scale_ptr,
+        shape = (N0, GROUP),
+        strides = (GROUP,1),
+        offsets = (block_id_j * B0, 0),
+        block_shape = (B0, GROUP),
+        order = (1,0)
+    )
+    offset_block_ptr = tl.make_block_ptr(
+        base = offset_ptr,
+        shape = (N0,GROUP // FPINT),
+        strides = (GROUP // FPINT,1),
+        offsets = (block_id_j * B0, 0),
+        block_shape = (B0, GROUP // FPINT),
+        order = (1,0)
+    )
+    z_block_ptr = tl.make_block_ptr(
+        base = z_ptr,
+        shape = (N0,N1),
+        strides = (N1,1),
+        offsets = (block_id_j * B0, block_id_k * B1),
+        block_shape = (B0, B1),
+        order = (1,0)
+    )
+    z = tl.zeros((B0, B1), dtype=tl.float32)
+    for i in range(0, MID, B_MID):
+        scale_fp32 = tl.load(scale_block_ptr, boundary_check=(0,1), padding_option='zero')#[B0,GROUP]
+        
+        offset_int32 = extract(tl.load(offset_block_ptr, boundary_check=(0,1), padding_option='zero'))#[B0, GROUP // FPINT, FPINT]
+        offset_int32 = offset_int32.view(B0, GROUP)#[B0, GROUP]
+        
+        weight_int32 = extract(tl.load(weight_block_ptr, boundary_check=(0,1), padding_option='zero'))#[B0, B_MID // FPINT, FPINT]
+        weight_int32 = weight_int32.view(B0, B_MID)#[B0, B_MID]
+        weight_int32 = weight_int32.reshape(B0,GROUP,B_MID // GROUP)#[B0, GROUP, B_MID // GROUP]
+
+        activation_fp32 = tl.load(activation_block_ptr, boundary_check=(0,1), padding_option='zero')
+        
+        weight_fp32 = scale_fp32[:,:,None] * (weight_int32 - offset_int32[:,:,None])
+        weight_fp32 = weight_fp32.reshape(B0,B_MID)
+
+        z += tl.dot(weight_fp32, activation_fp32)
+        scale_block_ptr = tl.advance(scale_block_ptr,(0, GROUP))
+        offset_block_ptr = tl.advance(offset_block_ptr,(0, GROUP // FPINT))
+        weight_block_ptr = tl.advance(weight_block_ptr,(0, B_MID // FPINT))
+        activation_block_ptr = tl.advance(activation_block_ptr,(B_MID, 0))
+    tl.store(z_block_ptr, z, boundary_check=(0,1))
+
     # Finish me!
     return
 
