@@ -375,7 +375,7 @@ def sum_spec(x: Float32[4, 200]) -> Float32[4,]:
 
 
 @triton.jit
-def sum_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
+def sum_kernel(x_ptr, z_ptr, N0, T, B0: tl.constexpr, B1: tl.constexpr):
     # Finish me!
     return
 
